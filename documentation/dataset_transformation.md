@@ -4,7 +4,7 @@ This script converts datasets annotated in **YOLO format** into the **COCO forma
 
 ---
 
-## 📌 Why Convert to COCO?
+## Why Convert to COCO?
 
 RT-DETRv2 expects datasets in **COCO format** (JSON annotations with image and bounding box metadata). Most open-source datasets are distributed in YOLO format, which uses simple text files for bounding boxes. This script bridges that gap by automatically converting YOLO datasets into the required COCO structure.
 
@@ -62,7 +62,7 @@ A COCO dataset includes:
 
 ---
 
-## ⚙️ How to Use
+## How to Use
 
 1. **Set the paths in the script:**
 
