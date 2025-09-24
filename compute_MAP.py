@@ -1,26 +1,31 @@
 # compute_MAP.py
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-import copy
+
 import torch
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
+
 class ComputeCOCOEval:
     """
-    COCOeval oficial (bbox) con saneado del GT:
-      - Convierte (logits, pred_boxes) NumPy -> Torch.
-      - post_process_object_detection -> (xyxy @ HxW orig).
-      - Convierte a COCO results (xywh) + score + category_id (ids ORIGINALES).
-      - Sanea GT: añade 'info'/ 'licenses' si faltan para evitar KeyError en loadRes().
+    Métrica COCO oficial (bbox).
+
+    Flujo:
+      - Recibe (logits, pred_boxes) por lote desde HF Trainer.
+      - Usa RTDetrImageProcessor.post_process_object_detection para pasar a (xyxy @ tamaño original).
+      - Convierte a resultados COCO (xywh) con 'category_id' mapeado a los IDs originales (new2old).
+      - Ejecuta COCOeval (pycocotools) y devuelve métricas clave.
     """
-    def __init__(self,
-                 processor,
-                 ann_file: str,
-                 val_images: List[Dict[str, Any]],
-                 new2old: Optional[Dict[int, int]] = None,
-                 score_thr: float = 0.001,
-                 id2label: Optional[Dict[int, str]] = None):
+
+    def __init__(
+        self,
+        processor,
+        ann_file: str,
+        val_images: List[Dict[str, Any]],   # lista con dicts COCO: 'id','height','width',...
+        new2old: Optional[Dict[int, int]] = None,
+        score_thr: float = 0.001,
+    ):
         self.p = processor
         self.ann_file = ann_file
         self.val_images = val_images
@@ -28,7 +33,8 @@ class ComputeCOCOEval:
         # mapping contiguo->original; si no viene, identidad
         self.new2old = {int(k): int(v) for k, v in (new2old or {}).items()}
 
-    def _sanitize_coco_gt(self, coco_gt: COCO) -> None:
+    @staticmethod
+    def _sanitize_coco_gt(coco_gt: COCO) -> None:
         # pycocotools espera 'info' y 'licenses' en coco_gt.dataset
         ds = coco_gt.dataset
         if "info" not in ds:
@@ -40,23 +46,23 @@ class ComputeCOCOEval:
         (logits, pred_boxes), _ = eval_pred.predictions, eval_pred.label_ids
         results: List[Dict[str, Any]] = []
 
-        B = logits.shape[0]  # pueden ser np.ndarray; convertimos por-imagen
+        B = logits.shape[0]
         for i in range(B):
             H = int(self.val_images[i]["height"])
             W = int(self.val_images[i]["width"])
             img_id = int(self.val_images[i]["id"])
 
-            li = torch.as_tensor(logits[i], dtype=torch.float32)      # (Q, C+1)
-            bi = torch.as_tensor(pred_boxes[i], dtype=torch.float32)  # (Q, 4) cxcywh in [0,1]
+            li = torch.as_tensor(logits[i], dtype=torch.float32)     # (Q, C+1)
+            bi = torch.as_tensor(pred_boxes[i], dtype=torch.float32) # (Q, 4) cxcywh in [0,1]
 
             det = self.p.post_process_object_detection(
                 SimpleNamespace(logits=li.unsqueeze(0), pred_boxes=bi.unsqueeze(0)),
                 target_sizes=torch.tensor([(H, W)], dtype=torch.long),
-                threshold=self.thr
-            )[0]  # dict: boxes(xyxy), scores, labels(new ids)
+                threshold=self.thr,
+            )[0]  # dict: 'boxes'(xyxy), 'scores', 'labels' (ids nuevos)
 
-            bxyxy = det["boxes"].cpu()
             # xyxy -> xywh
+            bxyxy = det["boxes"].cpu()
             xywh = bxyxy.clone()
             xywh[:, 2:] = bxyxy[:, 2:] - bxyxy[:, :2]
 
@@ -67,25 +73,22 @@ class ComputeCOCOEval:
                 cid_old = self.new2old.get(int(cid_new), int(cid_new))
                 results.append({
                     "image_id": img_id,
-                    "category_id": cid_old,   # ids originales del JSON
+                    "category_id": cid_old,
                     "bbox": [float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3])],
                     "score": float(sc),
                 })
 
         # COCOeval
         coco_gt = COCO(self.ann_file)
-        self._sanitize_coco_gt(coco_gt)  # <-- evita KeyError: 'info'
+        self._sanitize_coco_gt(coco_gt)
 
-        # loadRes necesita un dataset estilo detecciones (lista de dicts)
-        # si no hay preds, pasa lista vacía
         try:
             coco_dt = coco_gt.loadRes(results if results else [])
         except KeyError:
-            # por si otra clave faltase en builds antiguas
             self._sanitize_coco_gt(coco_gt)
             coco_dt = coco_gt.loadRes(results if results else [])
 
-        E = COCOeval(coco_gt, coco_dt, iouType='bbox')
+        E = COCOeval(coco_gt, coco_dt, iouType="bbox")
         E.evaluate(); E.accumulate(); E.summarize()
 
         return {
