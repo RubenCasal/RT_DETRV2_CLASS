@@ -23,7 +23,7 @@ def extract_dataset_labels(root_dataset):
     num_labels = len(id2label)
     
     return num_labels, old2new, id2label,label2id, train_ann, val_ann, train_ann_path, val_ann_path
-
+ 
 
 @staticmethod
 def sig_params(obj) -> set[str]:
